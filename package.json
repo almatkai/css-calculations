@@ -3,7 +3,7 @@
   "name": "css-calculations",
   "title": "CSS Calculations",
   "description": "Useful CSS Calculations in Web Development",
-  "icon": "css.png",
+  "icon": "assets/css.png",
   "author": "almatkai",
   "categories": [
     "Developer Tools",
@@ -13,7 +13,7 @@
   "commands": [
     {
       "name": "clamp_px",
-      "icon": "css_clamp.png",
+      "icon": "assets/css_clamp.png",
       "title": "Calculate Clamp PX",
       "description": "Generate responsive clamp function based on px values",
       "mode": "view",
@@ -24,7 +24,7 @@
     },
     {
       "name": "clamp_rem",
-      "icon": "css_clamp.png",
+      "icon": "assets/css_clamp.png",
       "title": "Calculate Clamp REM",
       "description": "Generate responsive clamp function based on rem values",
       "mode": "view",
