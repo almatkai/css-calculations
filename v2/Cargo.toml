@@ -1,0 +1,57 @@
+[package]
+name = "css-calculations-native-v2"
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.85"
+license = "MIT AND Apache-2.0 AND Unicode-3.0"
+description = "Offline CSS clamp calculator with original JavaScript numeric semantics"
+include = [
+    "src/**",
+    "adapter/**",
+    "scripts/**",
+    "validation/host/*.in",
+    "validation/tauri/*.in",
+    "fixtures/beta/**",
+    "fixtures/original/**",
+    "fixtures/libraries/**",
+    "licenses/**",
+    "assets/**",
+    "/README.md",
+    "/INTEGRATION.md",
+    "/VALIDATION.md",
+    "/NOTICES.md",
+    "/manifest.json",
+    "/provenance.json",
+    "/Cargo.toml",
+    "/Cargo.lock",
+    "/LICENSE",
+    "/.gitignore",
+    "fixtures/own/.eslintrc.json",
+    "fixtures/own/.gitignore",
+    "fixtures/own/.prettierrc",
+    "fixtures/own/CHANGELOG.md",
+    "fixtures/own/LICENSE",
+    "fixtures/own/README.md",
+    "fixtures/own/assets/css.png",
+    "fixtures/own/assets/css_clamp.png",
+    "fixtures/own/metadata/calculate-clamp-01.png",
+    "fixtures/own/package-lock.json",
+    "fixtures/own/package.json",
+    "fixtures/own/raycast-env.d.ts",
+    "fixtures/own/src/clamp_px.tsx",
+    "fixtures/own/src/clamp_rem.tsx",
+    "fixtures/own/src/hooks.ts",
+    "fixtures/own/src/utils.ts",
+    "fixtures/own/test/smoke.test.ts",
+    "fixtures/own/tsconfig.json",
+]
+
+[dependencies]
+serde_json = { version = "=1.0.140", features = ["float_roundtrip"] }
+ryu-js = "=1.0.2"
+num-bigint = "=0.4.6"
+num-traits = "=0.2.19"
+
+[[bin]]
+name = "css-oracle-driver"
+path = "src/oracle_driver.rs"

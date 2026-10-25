@@ -1,0 +1,12 @@
+/target/
+/.validation/
+/validation/host/Cargo.toml
+/validation/host/Cargo.lock
+/validation/host/src/
+/validation/host/tests/
+/validation/tauri/Cargo.toml
+/validation/tauri/src/
+/fixtures/own/node_modules/
+!fixtures/**/dist/
+!fixtures/**/dist/**
+**/target/

@@ -1,0 +1,86 @@
+//! Real pinned common/SDK/NativeSessions + production adapter. Only seams below are stubs.
+pub mod native_core {
+    #[path = "@ROOT@/fixtures/beta/src-tauri/src/native_core/common.rs"]
+    pub mod common;
+    pub mod extensions {
+        #[path = "@ROOT@/adapter/css_calculations.rs"]
+        pub mod css_calculations;
+        #[path = "@ROOT@/fixtures/beta/src-tauri/src/native_core/extensions/v2_sdk.rs"]
+        pub mod v2_sdk;
+        // Compile unchanged NativeSessions in the dependency build for integration tests.
+        // Its own unit tests target the full host/perplexity; use our external IPC tests.
+        #[cfg(not(test))]
+        #[path = "@ROOT@/fixtures/beta/src-tauri/src/native_core/extensions/native.rs"]
+        mod native;
+        pub mod v2_runtime {
+            use crate::native_core::common::{CoreContext, CoreResult};
+            use serde_json::Value;
+            // TEST REGISTRATION STUB: exact CSS registration proposed in INTEGRATION.md.
+            pub fn slug(id: &str) -> Option<&str> {
+                let slug = id
+                    .strip_prefix("com.tezbar.native.")
+                    .or_else(|| id.strip_prefix("raycast."))
+                    .unwrap_or(id);
+                (slug == "css-calculations").then_some(slug)
+            }
+            pub fn supports(id: &str, command: &str) -> bool {
+                slug(id).is_some() && super::css_calculations::commands().contains(&command)
+            }
+            pub async fn handle(
+                ctx: &CoreContext,
+                slug: &str,
+                command: &str,
+                operation: &str,
+                payload: &Value,
+                state: &mut Value,
+            ) -> CoreResult {
+                if slug != "css-calculations" {
+                    return Err("Test registration has no such slug".into());
+                }
+                super::css_calculations::handle(ctx, command, operation, payload, state).await
+            }
+        }
+        pub mod registry {
+            use crate::native_core::common::CoreContext;
+            use serde_json::{json, Value};
+            // TEST INSTALLATION STUB: no real profiles or host files. Marker is test-dir only.
+            pub fn installed_command(ctx: &CoreContext, _: &str, command: &str) -> Option<Value> {
+                (ctx.paths.data_dir.join("installed").exists()
+                    && super::css_calculations::commands().contains(&command))
+                .then(|| json!({}))
+            }
+            pub fn preferences(_: &Value, _: Option<&str>) -> Result<Value, String> {
+                Ok(json!({}))
+            }
+        }
+        #[cfg(not(test))]
+        #[derive(Clone, Default)]
+        pub struct Harness(native::NativeSessions);
+        #[cfg(not(test))]
+        impl Harness {
+            pub async fn call(
+                &self,
+                ctx: &crate::native_core::common::CoreContext,
+                channel: &str,
+                body: serde_json::Value,
+            ) -> serde_json::Value {
+                self.0
+                    .handle(
+                        ctx,
+                        &std::sync::Arc::new(std::sync::Mutex::new(())),
+                        channel,
+                        &[body],
+                    )
+                    .await
+                    .unwrap()
+                    .unwrap()
+            }
+            pub async fn clear(&self) {
+                self.0.clear().await;
+            }
+            pub async fn clear_slug(&self) {
+                self.0.clear_slug("css-calculations").await;
+            }
+        }
+    }
+}

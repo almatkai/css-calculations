@@ -1,0 +1,429 @@
+use css_beta_contract::native_core::{
+    common::{CoreContext, CorePaths},
+    extensions::{css_calculations as adapter, Harness},
+};
+use serde_json::{json, Value};
+use std::sync::{Arc, Mutex};
+type Calls = Arc<Mutex<Vec<(String, Vec<Value>)>>>;
+fn context(dir: &std::path::Path, response: Result<Value, String>) -> (CoreContext, Calls) {
+    let ctx = CoreContext::new(
+        CorePaths {
+            data_dir: dir.join("data"),
+            config_dir: dir.join("config"),
+            resource_dir: dir.join("resources"),
+            temp_dir: dir.join("tmp"),
+            home_dir: dir.into(),
+        },
+        None,
+    );
+    std::fs::create_dir_all(&ctx.paths.data_dir).unwrap();
+    std::fs::write(ctx.paths.data_dir.join("installed"), b"fixture").unwrap();
+    let calls: Calls = Arc::default();
+    let seen = calls.clone();
+    ctx.set_router(Arc::new(move |channel, args| {
+        seen.lock().unwrap().push((channel, args));
+        let response = response.clone();
+        Box::pin(async move { response })
+    }))
+    .unwrap();
+    (ctx, calls)
+}
+fn values() -> Value {
+    json!({"min_font_size":"16","max_font_size":"32","min_vw_width":"375","max_vw_width":"1400","pixels_per_rem":"16"})
+}
+fn action(view: &Value, index: usize) -> String {
+    view["actions"][index]["id"].as_str().unwrap().into()
+}
+fn field(view: &Value, index: usize) -> String {
+    view["root"]["children"][index]["props"]["actionId"]
+        .as_str()
+        .unwrap()
+        .into()
+}
+async fn launch(h: &Harness, ctx: &CoreContext, command: &str) -> Value {
+    h.call(ctx,"extension:run-command",json!({"extensionId":"com.tezbar.native.css-calculations","commandName":command,"argumentValues":{"min_font_size":"FORGED"},"preferences":{"ignored":true}})).await
+}
+async fn invoke(h: &Harness, ctx: &CoreContext, view: &Value, id: &str, values: Value) -> Value {
+    h.call(
+        ctx,
+        "extension:invoke-action",
+        json!({"sessionId":view["sessionId"],"actionId":id,"formValues":values,"output":"FORGED"}),
+    )
+    .await
+}
+#[tokio::test]
+async fn actual_native_lifecycle_drafts_and_bound_clipboard() {
+    let dir = tempfile::tempdir().unwrap();
+    let (ctx, calls) = context(dir.path(), Ok(json!({"ok":true,"error":null})));
+    let h = Harness::default();
+    let first = launch(&h, &ctx, "clamp_px").await;
+    assert_eq!(first["root"]["type"], "Form");
+    assert_eq!(first["root"]["children"][2]["props"]["value"], "375");
+    assert_eq!(first["root"]["children"][0]["props"]["value"], "");
+    let changed = invoke(&h, &ctx, &first, &field(&first, 0), json!({"value":"1e2"})).await;
+    assert_eq!(changed["root"]["children"][0]["props"]["value"], "1e2");
+    assert!(changed["root"]["children"][1]["props"]
+        .get("value")
+        .is_none());
+    assert_eq!(field(&first, 0), field(&changed, 0));
+    let second = invoke(&h, &ctx, &first, &field(&first, 1), json!({"value":"200"})).await;
+    assert!(second["root"]["children"][0]["props"]
+        .get("value")
+        .is_none());
+    let malformed = invoke(&h, &ctx, &first, &field(&first, 0), json!({"bad":"0"})).await;
+    assert_eq!(malformed["ok"], false);
+    let result = invoke(&h, &ctx, &first, &action(&first, 0), values()).await;
+    assert!(result["ok"].as_bool().unwrap());
+    assert!(result["root"]["children"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|v| v["props"]["text"] == "Clamp Copied 🎊"));
+    let css = css_calculations_native_v2::calculate(&values(), "px");
+    assert_eq!(
+        *calls.lock().unwrap(),
+        vec![("clipboard:write".into(), vec![json!(css)])]
+    );
+    for operation in ["refresh-session", "search-text-changed", "load-more"] {
+        let result = h
+            .call(
+                &ctx,
+                &format!("extension:{operation}"),
+                json!({"sessionId":first["sessionId"]}),
+            )
+            .await;
+        assert_eq!(result, json!({"ok":true,"mode":"unchanged"}));
+    }
+    if let Ok(path) = std::env::var("CSS_WIRE_OUTPUT") {
+        std::fs::write(
+            path,
+            serde_json::to_vec(&json!([first, changed, second, result])).unwrap(),
+        )
+        .unwrap();
+    }
+    assert!(!ctx.paths.data_dir.join("native-extensions-v2").exists());
+    assert_eq!(
+        h.call(
+            &ctx,
+            "extension:dispose-session",
+            json!({"sessionId":first["sessionId"]})
+        )
+        .await,
+        true
+    );
+    assert_eq!(
+        invoke(&h, &ctx, &first, &action(&first, 0), values()).await["ok"],
+        false
+    );
+}
+#[tokio::test]
+async fn strict_ack_failures_require_deliberate_bound_retry() {
+    let replies = vec![
+        Ok(Value::Null),
+        Ok(json!(true)),
+        Ok(json!({})),
+        Ok(json!({"ok":true,"error":"bad\nprivate"})),
+        Ok(json!({"ok":true,"success":false})),
+        Ok(json!({"ok":true,"success":null})),
+        Ok(json!({"ok":false})),
+        Err("private\n/path".into()),
+    ];
+    for reply in replies {
+        let dir = tempfile::tempdir().unwrap();
+        let (ctx, calls) = context(dir.path(), reply);
+        let h = Harness::default();
+        let first = launch(&h, &ctx, "clamp_rem").await;
+        let failed = invoke(&h, &ctx, &first, &action(&first, 0), values()).await;
+        assert_eq!(calls.lock().unwrap().len(), 1);
+        assert_eq!(failed["actions"].as_array().unwrap().len(), 2);
+        assert!(!failed.to_string().contains("private"));
+        let same = invoke(&h, &ctx, &first, &action(&first, 0), values()).await;
+        assert_eq!(calls.lock().unwrap().len(), 1);
+        let retry = action(&same, 1);
+        let retried = invoke(&h, &ctx, &first, &retry, json!({"css":"FORGED"})).await;
+        assert_eq!(calls.lock().unwrap().len(), 2);
+        assert_ne!(retry, action(&retried, 1));
+        {
+            let seen = calls.lock().unwrap();
+            assert_eq!(seen[0], seen[1]);
+        }
+        let stale = invoke(&h, &ctx, &first, &retry, json!({})).await;
+        assert_eq!(stale["ok"], false);
+        assert_eq!(calls.lock().unwrap().len(), 2);
+    }
+}
+#[tokio::test]
+async fn accepts_only_unambiguous_success_objects() {
+    for reply in [
+        json!({"ok":true}),
+        json!({"ok":true,"success":true}),
+        json!({"ok":true,"error":null,"success":true}),
+    ] {
+        let dir = tempfile::tempdir().unwrap();
+        let (ctx, calls) = context(dir.path(), Ok(reply));
+        let h = Harness::default();
+        let first = launch(&h, &ctx, "clamp_px").await;
+        let result = invoke(&h, &ctx, &first, &action(&first, 0), values()).await;
+        assert_eq!(result["actions"].as_array().unwrap().len(), 1);
+        assert_eq!(calls.lock().unwrap().len(), 1);
+    }
+}
+#[tokio::test]
+async fn rejects_cross_session_forged_ids_and_bad_transport_without_consuming_bindings() {
+    let dir = tempfile::tempdir().unwrap();
+    let (ctx, calls) = context(dir.path(), Ok(json!({"ok":true})));
+    let h = Harness::default();
+    let a = launch(&h, &ctx, "clamp_px").await;
+    let b = launch(&h, &ctx, "clamp_px").await;
+    for id in [action(&b, 0), "css:forged:submit".into()] {
+        assert_eq!(invoke(&h, &ctx, &a, &id, values()).await["ok"], false);
+    }
+    for v in [
+        Value::Null,
+        json!([]),
+        json!({}),
+        json!({"min_font_size":16}),
+        json!({"value":"16","unrelated":1}),
+    ] {
+        assert_eq!(
+            invoke(&h, &ctx, &a, &field(&a, 0), v.clone()).await["ok"],
+            false
+        );
+        assert_eq!(invoke(&h, &ctx, &a, &action(&a, 0), v).await["ok"], false);
+    }
+    let long = "1".repeat(65_537);
+    assert_eq!(
+        invoke(&h, &ctx, &a, &field(&a, 0), json!({"value":long})).await["ok"],
+        false
+    );
+    let good = invoke(&h, &ctx, &a, &action(&a, 0), values()).await;
+    assert_eq!(good["ok"], true);
+    assert_eq!(calls.lock().unwrap().len(), 1);
+    h.clear_slug().await;
+    assert_eq!(
+        invoke(&h, &ctx, &b, &action(&b, 0), values()).await["ok"],
+        false
+    );
+    let c = launch(&h, &ctx, "clamp_px").await;
+    assert_ne!(action(&a, 0), action(&c, 0));
+    h.clear().await;
+}
+#[tokio::test]
+async fn source_validation_differences_and_hook_key_bug_are_retained() {
+    let dir = tempfile::tempdir().unwrap();
+    let (ctx, calls) = context(dir.path(), Ok(json!({"ok":true})));
+    let h = Harness::default();
+    let first = launch(&h, &ctx, "clamp_px").await;
+    let changed = invoke(&h, &ctx, &first, &field(&first, 2), json!({"value":"-1"})).await;
+    assert_eq!(
+        changed["root"]["children"][2]["props"]["error"],
+        "Min viewport width must be grater than 0!"
+    );
+    let mut v = values();
+    v["min_vw_width"] = json!("bad");
+    let failed = invoke(&h, &ctx, &first, &action(&first, 0), v).await;
+    assert_eq!(
+        failed["root"]["children"][2]["props"]["error"],
+        changed["root"]["children"][2]["props"]["error"]
+    );
+    assert!(calls.lock().unwrap().is_empty());
+    let mut v = values();
+    v["min_font_size"] = json!("0");
+    v["min_vw_width"] = json!("1400");
+    let result = invoke(&h, &ctx, &first, &action(&first, 0), v).await;
+    assert_eq!(result["ok"], true);
+    assert!(calls.lock().unwrap()[0].1[0]
+        .as_str()
+        .unwrap()
+        .contains("Infinity"));
+}
+#[tokio::test]
+async fn clone_discard_refresh_dispose_and_non_revival() {
+    let dir = tempfile::tempdir().unwrap();
+    let (ctx, _) = context(dir.path(), Ok(json!({"ok":true})));
+    let mut state = json!({});
+    let first = adapter::handle(
+        &ctx,
+        "clamp_px",
+        "extension:run-command",
+        &json!({}),
+        &mut state,
+    )
+    .await
+    .unwrap();
+    let original = state.clone();
+    let mut discarded = state.clone();
+    assert_eq!(
+        adapter::handle(
+            &ctx,
+            "clamp_px",
+            "extension:search-text-changed",
+            &json!({}),
+            &mut discarded
+        )
+        .await
+        .unwrap()["mode"],
+        "unchanged"
+    );
+    assert_eq!(discarded, original);
+    adapter::handle(
+        &ctx,
+        "clamp_px",
+        "extension:run-command",
+        &json!({}),
+        &mut discarded,
+    )
+    .await
+    .unwrap();
+    let lost = discarded.clone();
+    adapter::handle(
+        &ctx,
+        "clamp_px",
+        "extension:run-command",
+        &json!({}),
+        &mut state,
+    )
+    .await
+    .unwrap();
+    assert_ne!(state["nonce"], lost["nonce"]);
+    assert!(adapter::handle(
+        &ctx,
+        "clamp_px",
+        "extension:invoke-action",
+        &json!({"actionId":action(&first,0),"formValues":values()}),
+        &mut state
+    )
+    .await
+    .is_err());
+    let before = state.clone();
+    assert_eq!(
+        adapter::handle(
+            &ctx,
+            "clamp_px",
+            "extension:refresh-session",
+            &json!({}),
+            &mut state
+        )
+        .await
+        .unwrap()["mode"],
+        "unchanged"
+    );
+    assert_eq!(state, before);
+    adapter::handle(
+        &ctx,
+        "clamp_px",
+        "extension:dispose-session",
+        &json!({}),
+        &mut state,
+    )
+    .await
+    .unwrap();
+    assert!(adapter::handle(
+        &ctx,
+        "clamp_px",
+        "extension:invoke-action",
+        &json!({}),
+        &mut state
+    )
+    .await
+    .is_err());
+}
+#[tokio::test]
+async fn cancelled_effect_preserves_intent_without_automatic_repeat() {
+    let dir = tempfile::tempdir().unwrap();
+    let (ctx, _) = context(dir.path(), Ok(json!({"ok":true})));
+    let pending = CoreContext::new(ctx.paths.clone(), None);
+    let entered = Arc::new(tokio::sync::Notify::new());
+    let signal = entered.clone();
+    pending
+        .set_router(Arc::new(move |_, _| {
+            let signal = signal.clone();
+            Box::pin(async move {
+                signal.notify_one();
+                std::future::pending().await
+            })
+        }))
+        .unwrap();
+    let mut state = json!({});
+    let first = adapter::handle(
+        &pending,
+        "clamp_px",
+        "extension:run-command",
+        &json!({}),
+        &mut state,
+    )
+    .await
+    .unwrap();
+    let body = json!({"actionId":action(&first,0),"formValues":values()});
+    {
+        let future = adapter::handle(
+            &pending,
+            "clamp_px",
+            "extension:invoke-action",
+            &body,
+            &mut state,
+        );
+        tokio::pin!(future);
+        tokio::select! { _=entered.notified()=>(), result=&mut future=>panic!("unexpected {result:?}") }
+    }
+    assert_eq!(state["effect"]["status"], "pending");
+    let (recovered, calls) = context(dir.path(), Ok(json!({"ok":true})));
+    let blocked = adapter::handle(
+        &recovered,
+        "clamp_px",
+        "extension:invoke-action",
+        &body,
+        &mut state,
+    )
+    .await
+    .unwrap();
+    assert!(calls.lock().unwrap().is_empty());
+    let retry = action(&blocked, 1);
+    adapter::handle(
+        &recovered,
+        "clamp_px",
+        "extension:invoke-action",
+        &json!({"actionId":retry,"formValues":{"output":"forged"}}),
+        &mut state,
+    )
+    .await
+    .unwrap();
+    assert_eq!(state["effect"]["status"], "acknowledged");
+    assert_eq!(calls.lock().unwrap().len(), 1);
+}
+#[tokio::test]
+async fn actual_native_uninstall_and_stale_launch_do_not_reach_router() {
+    let dir = tempfile::tempdir().unwrap();
+    let (ctx, calls) = context(dir.path(), Ok(json!({"ok":true})));
+    let h = Harness::default();
+    let first = launch(&h, &ctx, "clamp_px").await;
+    std::fs::remove_file(ctx.paths.data_dir.join("installed")).unwrap();
+    assert_eq!(
+        invoke(&h, &ctx, &first, &action(&first, 0), values()).await["ok"],
+        false
+    );
+    assert_eq!(launch(&h, &ctx, "clamp_px").await["ok"], false);
+    assert_eq!(h.call(&ctx,"extension:run-command",json!({"sessionId":first["sessionId"],"extensionId":"com.tezbar.native.css-calculations","commandName":"clamp_px"})).await["ok"],false);
+    assert!(calls.lock().unwrap().is_empty());
+}
+#[tokio::test]
+async fn actual_native_serializes_concurrent_complete_submissions() {
+    let dir = tempfile::tempdir().unwrap();
+    let (ctx, calls) = context(dir.path(), Ok(json!({"ok":true})));
+    let h = Harness::default();
+    let first = launch(&h, &ctx, "clamp_px").await;
+    let mut tasks = Vec::new();
+    for i in 1..=12 {
+        let (h, ctx, first) = (h.clone(), ctx.clone(), first.clone());
+        tasks.push(tokio::spawn(async move {
+            let mut v = values();
+            v["min_font_size"] = json!(i.to_string());
+            invoke(&h, &ctx, &first, &action(&first, 0), v).await
+        }));
+    }
+    for t in tasks {
+        assert_eq!(t.await.unwrap()["ok"], true);
+    }
+    assert_eq!(calls.lock().unwrap().len(), 12);
+    h.clear().await;
+}
