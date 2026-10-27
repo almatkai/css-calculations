@@ -1,0 +1,58 @@
+{
+  "schemaVersion": 2,
+  "id": "com.tezbar.native.css-calculations",
+  "slug": "css-calculations",
+  "name": "CSS Calculations",
+  "version": "0.1.0",
+  "description": "Useful CSS Calculations in Web Development. Original extension by teziovsky; Native V2 retains the original icon and V1 fallback.",
+  "icon": "/extensions/icons/css-calculations.png",
+  "runtime": "rust",
+  "replaces": [
+    "raycast.css-calculations"
+  ],
+  "platforms": [
+    "macOS",
+    "Windows"
+  ],
+  "preferences": [],
+  "commands": [
+    {
+      "name": "clamp_px",
+      "title": "Calculate Clamp PX",
+      "description": "Generate responsive clamp function based on px values",
+      "mode": "view",
+      "platforms": [
+        "macOS",
+        "Windows"
+      ],
+      "runtime": "rust",
+      "preferences": [],
+      "arguments": []
+    },
+    {
+      "name": "clamp_rem",
+      "title": "Calculate Clamp REM",
+      "description": "Generate responsive clamp function based on rem values",
+      "mode": "view",
+      "platforms": [
+        "macOS",
+        "Windows"
+      ],
+      "runtime": "rust",
+      "preferences": [],
+      "arguments": []
+    }
+  ],
+  "verification": [
+    {
+      "platform": "macOS",
+      "state": "not-run",
+      "note": "Host registration/rebuild and real OS UI/clipboard/focus QA not run."
+    },
+    {
+      "platform": "Windows",
+      "state": "not-run",
+      "note": "Host registration/rebuild and real OS UI/clipboard/focus QA not run."
+    }
+  ]
+}
